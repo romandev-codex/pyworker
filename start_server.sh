@@ -47,13 +47,18 @@ JSON
 }
 
 function install_vastai_sdk() {
+    local uv_flags=()
+    if [ "${USE_SYSTEM_PYTHON:-}" = "true" ]; then
+        uv_flags+=(--system --break-system-packages)
+    fi
+
     # If SDK_BRANCH is set, install vastai-sdk from the vast-sdk repo at that branch/tag/commit.
     if [ -n "${SDK_BRANCH:-}" ]; then
         if [ -n "${SDK_VERSION:-}" ]; then
             echo "WARNING: Both SDK_BRANCH and SDK_VERSION are set; using SDK_BRANCH=${SDK_BRANCH}"
         fi
         echo "Installing vastai-sdk from https://github.com/vast-ai/vast-sdk/ @ ${SDK_BRANCH}"
-        if ! uv pip install "vastai-sdk @ git+https://github.com/vast-ai/vast-sdk.git@${SDK_BRANCH}"; then
+        if ! uv pip install "${uv_flags[@]}" "vastai-sdk @ git+https://github.com/vast-ai/vast-sdk.git@${SDK_BRANCH}"; then
             report_error_and_exit "Failed to install vastai-sdk from vast-ai/vast-sdk@${SDK_BRANCH}"
         fi
         return 0
@@ -61,14 +66,14 @@ function install_vastai_sdk() {
 
     if [ -n "${SDK_VERSION:-}" ]; then
         echo "Installing vastai-sdk version ${SDK_VERSION}"
-        if ! uv pip install "vastai-sdk==${SDK_VERSION}"; then
+        if ! uv pip install "${uv_flags[@]}" "vastai-sdk==${SDK_VERSION}"; then
             report_error_and_exit "Failed to install vastai-sdk==${SDK_VERSION}"
         fi
         return 0
     fi
 
     echo "Installing default vastai-sdk"
-    if ! uv pip install vastai-sdk; then
+    if ! uv pip install "${uv_flags[@]}" vastai-sdk; then
         report_error_and_exit "Failed to install vastai-sdk"
     fi
 }
