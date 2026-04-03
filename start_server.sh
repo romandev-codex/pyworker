@@ -208,7 +208,7 @@ elif [ ! -d "$ENV_PATH" ]; then
     fi
 
     if [[ ! -d $SERVER_DIR ]]; then
-        if ! git clone "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"; then
+        if ! git clone "${PYWORKER_REPO:-https://github.com/romandev-codex/pyworker}" "$SERVER_DIR"; then
             report_error_and_exit "Failed to clone pyworker repository"
         fi
     elif [ "$FORCE_UPDATE" = true ]; then
