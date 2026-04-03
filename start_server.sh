@@ -10,6 +10,7 @@ DEBUG_LOG="$WORKSPACE_DIR/debug.log"
 PYWORKER_LOG="$WORKSPACE_DIR/pyworker.log"
 
 REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
+USE_SSL="${USE_SSL:-true}"
 WORKER_PORT="${WORKER_PORT:-3000}"
 mkdir -p "$WORKSPACE_DIR"
 cd "$WORKSPACE_DIR"
@@ -139,7 +140,62 @@ else
     echo "venv: $VIRTUAL_ENV"
 fi
 
-export REPORT_ADDR WORKER_PORT UNSECURED
+
+if [ "$USE_SSL" = true ]; then
+
+    if ! cat << EOF > /etc/openssl-san.cnf
+    [req]
+    default_bits       = 2048
+    distinguished_name = req_distinguished_name
+    req_extensions     = v3_req
+
+    [req_distinguished_name]
+    countryName         = US
+    stateOrProvinceName = CA
+    organizationName    = Vast.ai Inc.
+    commonName          = vast.ai
+
+    [v3_req]
+    basicConstraints = CA:FALSE
+    keyUsage         = nonRepudiation, digitalSignature, keyEncipherment
+    subjectAltName   = @alt_names
+
+    [alt_names]
+    IP.1   = 0.0.0.0
+EOF
+    then
+        report_error_and_exit "Failed to write OpenSSL config"
+    fi
+
+    if ! openssl req -newkey rsa:2048 -subj "/C=US/ST=CA/CN=pyworker.vast.ai/" \
+        -nodes \
+        -sha256 \
+        -keyout /etc/instance.key \
+        -out /etc/instance.csr \
+        -config /etc/openssl-san.cnf; then
+        report_error_and_exit "Failed to generate SSL certificate request"
+    fi
+
+    max_retries=5
+    retry_delay=2
+    for attempt in $(seq 1 "$max_retries"); do
+        http_code=$(curl -sS -o /etc/instance.crt -w '%{http_code}' \
+            --header 'Content-Type: application/octet-stream' \
+            --data-binary @/etc/instance.csr \
+            -X POST "https://console.vast.ai/api/v0/sign_cert/?instance_id=$CONTAINER_ID")
+        if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+            break
+        fi
+        echo "SSL cert signing attempt $attempt/$max_retries failed (HTTP $http_code)"
+        if [ "$attempt" -eq "$max_retries" ]; then
+            report_error_and_exit "Failed to sign SSL certificate after $max_retries attempts (HTTP $http_code)"
+        fi
+        sleep "$retry_delay"
+        retry_delay=$((retry_delay * 2))
+    done
+fi
+
+export REPORT_ADDR WORKER_PORT USE_SSL UNSECURED
 
 if ! cd "$SERVER_DIR"; then
     report_error_and_exit "Failed to cd into SERVER_DIR: $SERVER_DIR"
