@@ -111,24 +111,25 @@ async def run_prompt_task(prompt_id: str) -> None:
         await set_prompt_state(prompt_id, "failed", str(exc))
 
 
-def handler(request: Any) -> dict[str, Any]:
-    # Minimal mock response contract expected by the worker.
-    return {
-        "status": "success",
-        "output": {
-            "text": "mock response",
-        },
-    }
-
-
 @app.get("/health")
 async def status() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/prompt")
-async def prompt(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    return handler(payload or {})
+@app.post("/prompt", status_code=202)
+async def prompt() -> dict[str, Any]:
+    prompt_id = str(uuid.uuid4())
+    await set_prompt_state(prompt_id, "pending", None)
+
+    # Run work in background and return immediately.
+    asyncio.create_task(run_prompt_task(prompt_id))
+
+    return {
+        "prompt_id": prompt_id,
+        "status": "pending",
+        "message": "command started in background",
+        "poll_after_seconds": DEFAULT_DELAY_SECONDS,
+    }
 
 
 @app.get("/history/{prompt_id}")
