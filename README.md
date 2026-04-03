@@ -1,6 +1,6 @@
 # Vast PyWorker Examples
 
-This repository contains **example PyWorkers** used by Vast.ai’s default Serverless templates (e.g., vLLM, TGI, ComfyUI, Wan, ACE). A PyWorker is a lightweight Python HTTP proxy that runs alongside your model server and:
+This repository contains **example PyWorkers** used by Vast.ai’s default Serverless templates (e.g., vLLM, TGI, ComfyUI, Wan, ACE, Mock). A PyWorker is a lightweight Python HTTP proxy that runs alongside your model server and:
 
 - Exposes one or more HTTP routes (e.g., `/v1/completions`, `/generate/sync`)
 - Optionally validates/transforms request payloads
@@ -95,6 +95,7 @@ This repository contains example PyWorkers corresponding to common Vast template
 - **ComfyUI (Image / JSON workflows)**: `/generate/sync` for ComfyUI workflow execution
 - **ComfyUI Wan 2.2 (T2V)**: ComfyUI workflow execution producing video outputs
 - **ComfyUI ACE Step (Text-to-Music)**: ComfyUI workflow execution producing audio outputs
+- **Mock backend**: asynchronous prompt/history flow for endpoint and queue behavior testing
 
 Exact worker paths and naming may vary by template; use the `workers/` directory as the source of truth.
 

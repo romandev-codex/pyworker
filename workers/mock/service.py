@@ -1,25 +1,38 @@
-# pip install fastapi uvicorn
-# uvicorn service:app --host 0.0.0.0 --port 3010 --reload
-# curl http://127.0.0.1:3010/health
-# curl -X POST http://127.0.0.1:3010/command
+"""Mock model service used by the mock PyWorker backend.
+
+Run locally:
+  uvicorn workers.mock.service:app --host 0.0.0.0 --port 3010 --reload
+
+Quick test:
+  curl http://127.0.0.1:3010/health
+  curl -X POST http://127.0.0.1:3010/prompt
+  curl "http://127.0.0.1:3010/history?prompt_id=<prompt-id>"
+"""
+
+import asyncio
+import json
+import os
+import uuid
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-import asyncio
-import json
-import uuid
-from pathlib import Path
 
 app = FastAPI()
 
 # Persist history on disk so IDs survive reload/restart.
 HISTORY_FILE = Path(__file__).with_name("history_store.json")
-history_store = {}
+DEFAULT_DELAY_SECONDS = float(os.environ.get("MOCK_PROMPT_DELAY_SECONDS", "10"))
+
+history_store: dict[str, dict[str, Any]] = {}
+history_store_lock = asyncio.Lock()
 
 
-def load_history_store() -> dict:
+def load_history_store() -> dict[str, dict[str, Any]]:
     if not HISTORY_FILE.exists():
         return {}
+
     try:
         with HISTORY_FILE.open("r", encoding="utf-8") as file_obj:
             data = json.load(file_obj)
@@ -27,12 +40,56 @@ def load_history_store() -> dict:
                 return data
     except Exception:
         pass
+
     return {}
 
 
 def save_history_store() -> None:
     with HISTORY_FILE.open("w", encoding="utf-8") as file_obj:
         json.dump(history_store, file_obj, ensure_ascii=True, indent=2)
+
+
+async def set_prompt_state(prompt_id: str, status: str, result: Any) -> None:
+    async with history_store_lock:
+        history_store[prompt_id] = {
+            "status": status,
+            "result": result,
+        }
+        save_history_store()
+
+
+async def get_prompt_state(prompt_id: str) -> dict[str, Any] | None:
+    async with history_store_lock:
+        return history_store.get(prompt_id)
+
+
+def build_history_response(prompt_id: str, state: dict[str, Any]) -> JSONResponse:
+    payload = {
+        "prompt_id": prompt_id,
+        **state,
+    }
+
+    status = state.get("status")
+    if status == "completed":
+        return JSONResponse(status_code=200, content=payload)
+    if status == "pending":
+        return JSONResponse(status_code=202, content=payload)
+    if status == "failed":
+        return JSONResponse(status_code=500, content=payload)
+
+    return JSONResponse(status_code=202, content=payload)
+
+
+async def resolve_history(prompt_id: str) -> JSONResponse:
+    normalized_prompt_id = prompt_id.strip()
+    if not normalized_prompt_id:
+        raise HTTPException(status_code=400, detail="prompt_id is required")
+
+    state = await get_prompt_state(normalized_prompt_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Prompt ID not found")
+
+    return build_history_response(normalized_prompt_id, state)
 
 
 @app.on_event("startup")
@@ -43,68 +100,60 @@ async def startup_event() -> None:
 
 async def run_prompt_task(prompt_id: str) -> None:
     try:
-        # simulate long-running task
-        await asyncio.sleep(10)
-
-        # store result
-        history_store[prompt_id] = {
-            "status": "completed",
-            "result": f"command finished for {prompt_id}"
-        }
-        save_history_store()
+        # Simulate a long-running model task.
+        await asyncio.sleep(DEFAULT_DELAY_SECONDS)
+        await set_prompt_state(
+            prompt_id,
+            "completed",
+            f"command finished for {prompt_id}",
+        )
     except Exception as exc:
-        history_store[prompt_id] = {
-            "status": "failed",
-            "result": str(exc)
-        }
-        save_history_store()
+        await set_prompt_state(prompt_id, "failed", str(exc))
 
-# 1. Status endpoint
+
 @app.get("/health")
-async def status():
+async def status() -> dict[str, str]:
     return {"status": "ok"}
 
-# 2. Command endpoint with 10-second delay
-@app.post("/prompt")
-async def prompt():
+
+@app.post("/prompt", status_code=202)
+async def prompt() -> dict[str, Any]:
     prompt_id = str(uuid.uuid4())
+    await set_prompt_state(prompt_id, "pending", None)
 
-    # mark as pending
-    history_store[prompt_id] = {"status": "pending", "result": None}
-    save_history_store()
-
-    # run work in background and return immediately
+    # Run work in background and return immediately.
     asyncio.create_task(run_prompt_task(prompt_id))
 
     return {
         "prompt_id": prompt_id,
-        "message": "command started in background"
+        "status": "pending",
+        "message": "command started in background",
+        "poll_after_seconds": DEFAULT_DELAY_SECONDS,
     }
 
-# 3. History endpoint
-@app.get("/history/{promptid}")
-async def get_history(promptid: str):
-    normalized_prompt_id = promptid.strip()
-    if normalized_prompt_id not in history_store:
-        raise HTTPException(status_code=404, detail="Prompt ID not found")
 
-    payload = {
-        "prompt_id": normalized_prompt_id,
-        **history_store[normalized_prompt_id]
-    }
+@app.get("/history/{prompt_id}")
+async def get_history_path(prompt_id: str) -> JSONResponse:
+    return await resolve_history(prompt_id)
 
-    status = payload.get("status")
-    if status == "completed":
-        return payload
-    if status == "pending":
-        return JSONResponse(status_code=202, content=payload)
-    if status == "failed":
-        return JSONResponse(status_code=500, content=payload)
 
-    return JSONResponse(status_code=202, content=payload)
+@app.get("/history")
+async def get_history_query(prompt_id: str) -> JSONResponse:
+    return await resolve_history(prompt_id)
+
+
+@app.post("/history")
+async def post_history_query(payload: dict[str, Any]) -> JSONResponse:
+    prompt_id = str(payload.get("prompt_id", ""))
+    return await resolve_history(prompt_id)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("service:app", host="0.0.0.0", port=3010, reload=True)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("MODEL_SERVER_PORT", "3010")),
+        reload=os.environ.get("MOCK_SERVICE_RELOAD", "false").lower() == "true",
+    )

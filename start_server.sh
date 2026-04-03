@@ -15,6 +15,7 @@ SERVER_DIR="$WORKSPACE_DIR/vast-pyworker"
 ENV_PATH="${ENV_PATH:-$WORKSPACE_DIR/worker-env}"
 DEBUG_LOG="$WORKSPACE_DIR/debug.log"
 PYWORKER_LOG="$WORKSPACE_DIR/pyworker.log"
+MOCK_SERVICE_PID=""
 
 REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
 USE_SSL="${USE_SSL:-true}"
@@ -53,6 +54,55 @@ JSON
     exit 1
 }
 
+function stop_mock_service(){
+    if [ -n "$MOCK_SERVICE_PID" ] && kill -0 "$MOCK_SERVICE_PID" > /dev/null 2>&1; then
+        echo "Stopping mock service (PID $MOCK_SERVICE_PID)"
+        kill "$MOCK_SERVICE_PID" > /dev/null 2>&1 || true
+        wait "$MOCK_SERVICE_PID" 2>/dev/null || true
+    fi
+}
+
+function start_mock_service(){
+    local mock_service_module="workers.mock.service"
+    local mock_service_file="$SERVER_DIR/workers/mock/service.py"
+
+    if [ ! -f "$mock_service_file" ]; then
+        report_error_and_exit "Mock backend selected but service file is missing: $mock_service_file"
+    fi
+
+    export MODEL_SERVER_URL="${MODEL_SERVER_URL:-http://127.0.0.1}"
+    export MODEL_SERVER_PORT="${MODEL_SERVER_PORT:-3010}"
+    export MODEL_HEALTHCHECK_ENDPOINT="${MODEL_HEALTHCHECK_ENDPOINT:-/health}"
+    export MODEL_LOG="${MODEL_LOG:-$WORKSPACE_DIR/mock-service.log}"
+
+    echo "Starting mock model service: $mock_service_module"
+    echo "Mock model service log: $MODEL_LOG"
+    python3 -m "$mock_service_module" >> "$MODEL_LOG" 2>&1 &
+    MOCK_SERVICE_PID=$!
+
+    local health_url="http://127.0.0.1:${MODEL_SERVER_PORT}${MODEL_HEALTHCHECK_ENDPOINT}"
+    local max_retries=30
+    local retry_delay=1
+
+    for attempt in $(seq 1 "$max_retries"); do
+        if curl -fsS "$health_url" > /dev/null 2>&1; then
+            echo "Mock model service is healthy: $health_url"
+            return 0
+        fi
+
+        if ! kill -0 "$MOCK_SERVICE_PID" > /dev/null 2>&1; then
+            report_error_and_exit "Mock model service exited before becoming healthy"
+        fi
+
+        echo "Waiting for mock model service ($attempt/$max_retries): $health_url"
+        sleep "$retry_delay"
+    done
+
+    report_error_and_exit "Mock model service did not become healthy: $health_url"
+}
+
+trap 'stop_mock_service' EXIT
+
 function install_vastai_sdk() {
     local uv_flags=()
     if [ "${USE_SYSTEM_PYTHON:-}" = "true" ]; then
@@ -89,7 +139,7 @@ function install_vastai_sdk() {
     fi
 }
 
-[ -n "$BACKEND" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit "HF_TOKEN must be set when BACKEND is set!"
+[ -n "$BACKEND" ] && [ "$BACKEND" != "mock" ] && [ -z "$HF_TOKEN" ] && report_error_and_exit "HF_TOKEN must be set when BACKEND is set!"
 [ -z "$CONTAINER_ID" ] && report_error_and_exit "CONTAINER_ID must be set!"
 [ "$BACKEND" = "comfyui" ] && [ -z "$COMFY_MODEL" ] && report_error_and_exit "For comfyui backends, COMFY_MODEL must be set!"
 
@@ -330,6 +380,10 @@ fi
 
 if ! cd "$SERVER_DIR"; then
     report_error_and_exit "Failed to cd into SERVER_DIR: $SERVER_DIR"
+fi
+
+if [ "$BACKEND" = "mock" ]; then
+    start_mock_service
 fi
 
 echo "launching PyWorker server"
